@@ -53,3 +53,6 @@ After the performance has peaked, you can evaluate the model using evaluate_gene
 python evaluate_generations.py --ckpt-path=path-to-the-best-validation-checkpoint --eval-path=path-to-the-test-csv-file
 ```
 Additionally use --language=zh and --multi-ref for evaluating on Weibo.
+
+## Datasets
+[OST](https://github.com/yq-wen/overlapping-datasets), [Weibo](https://drive.google.com/file/d/1KX-34q9kx6i9tqhyHH6jfMSR-68u_3Mn/view?usp=sharing)
