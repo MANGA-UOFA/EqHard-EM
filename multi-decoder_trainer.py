@@ -283,6 +283,70 @@ class EMTrainer(MultiAdapterTrainer, ABC):
 
         return loss
 
+class DropoutTrickEMTrainer(MultiAdapterTrainer, ABC):
+
+    def get_per_sample_loss(self, batch):
+
+        input_ids = batch['input_ids'].cuda()
+        labels = batch['labels'].cuda()
+        attention_mask = batch['attention_mask'].cuda()
+
+        batch_size = len(labels)
+
+        encoder_outputs = self.model.encode(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+
+        per_sample_loss = torch.zeros(batch_size, self.model.num_modes).cuda()
+
+        for i in range(self.model.num_modes):
+
+            self.model.mode_idx = i
+            outputs = self.model(
+                encoder_outputs=encoder_outputs,
+                attention_mask=attention_mask,
+                labels=labels,
+            )
+            logits = outputs.logits
+
+            for sample_idx in range(batch_size):
+                per_sample_loss[sample_idx][i] = cross_entropy(logits[sample_idx], labels[sample_idx])
+
+        return per_sample_loss
+
+    @abstractmethod
+    def get_assignments(self, per_sample_loss):
+        '''Given per_sample_loss (num_samples x num_decoders), return a matrix
+        of the same size, indicating the weight of each sample forf each decoder
+        '''
+        pass
+
+    def compute_loss(self, batch):
+
+        num_modes = self.model.num_modes
+        batch_size = len(batch['labels'])
+
+        if self.model.training:
+            with torch.no_grad():
+                self.model.eval()
+                no_dropout_per_sample_loss = self.get_per_sample_loss(batch)
+                self.model.train()
+                assignments = self.get_assignments(no_dropout_per_sample_loss)
+
+        per_sample_loss = self.get_per_sample_loss(batch)
+        loss = (per_sample_loss * assignments).sum() / batch_size
+
+        with torch.no_grad():
+            per_decoder_steps = torch.sum(assignments, dim=0)
+            per_decoder_steps = per_decoder_steps.cpu().numpy() / batch_size
+
+        if self.model.training:
+            for j in range(num_modes):
+                self.steps_trained_per_mode[j] += per_decoder_steps[j].item()
+
+        return loss
+
 class HardEMTrainer(EMTrainer):
 
     def handle_per_sample_loss(self, per_sample_loss):
@@ -315,6 +379,32 @@ class SoftEMTrainer(EMTrainer):
         per_decoder_steps = per_decoder_steps.cpu().numpy() / batch_size
 
         return loss, per_decoder_steps
+
+class DropoutTrickHardEMTrainer(DropoutTrickEMTrainer):
+
+    def get_assignments(self, per_sample_loss):
+
+        num_modes = self.model.num_modes
+        batch_size = per_sample_loss.shape[0]
+
+        assignments = torch.zeros((batch_size, num_modes))
+        best_decoders = per_sample_loss.argmin(dim=1)
+        assignments[range(batch_size), best_decoders] = 1
+
+        return assignments.cuda()
+
+class DropoutTrickSoftEMTrainer(DropoutTrickEMTrainer):
+
+    def get_assignments(self, per_sample_loss):
+
+        num_modes = self.model.num_modes
+        batch_size = per_sample_loss.shape[0]
+
+        batch_size = per_sample_loss.shape[0]
+
+        assignments = torch.softmax(-per_sample_loss, dim=-1)  # (batch_size, num_decoder)
+
+        return assignments.cuda()
 
 if __name__ == '__main__':
 
@@ -350,7 +440,7 @@ if __name__ == '__main__':
     parser.add_argument('--proj-ratio', type=float, default=0.5)
 
     # Training parameters
-    parser.add_argument('--trainer', choices=['eqhem', 'random', 'sem', 'hem', 'drandom'], required=True)
+    parser.add_argument('--trainer', choices=['eqhem', 'random', 'sem', 'hem', 'drandom', 'trick-hem', 'trick-sem'], required=True)
     parser.add_argument('--decoder', choices=['adapter', 'transformer'], default='adapter')
     parser.add_argument('--num-epochs', type=int, default=10000)
     parser.add_argument('--learning-rate', type=float, default=5e-5)
@@ -465,5 +555,9 @@ if __name__ == '__main__':
     elif args.trainer == 'drandom':
         config['shuffle'] = True
         trainer = RandomTrainer(**config)
+    elif args.trainer == 'trick-hem':
+        trainer = DropoutTrickHardEMTrainer(**config)
+    elif args.trainer == 'trick-sem':
+        trainer = DropoutTrickSoftEMTrainer(**config)
 
     trainer.train()
