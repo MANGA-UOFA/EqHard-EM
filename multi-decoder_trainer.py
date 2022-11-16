@@ -25,6 +25,7 @@ from scipy.optimize import linear_sum_assignment
 from model import adapter_t5
 from model import multidecoder_t5
 from abc import ABC, abstractmethod
+from torch import nn
 
 
 class MultiAdapterTrainer(BaseTrainer):
@@ -285,7 +286,31 @@ class EMTrainer(MultiAdapterTrainer, ABC):
 
 class DropoutTrickEMTrainer(MultiAdapterTrainer, ABC):
 
+    def __init__(self, *args, lp=False, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.lp = lp
+        if self.lp:
+            d_model = self.model.config.d_model
+            self.classifier = nn.Sequential(
+                nn.Linear(d_model, d_model // 2),
+                nn.ReLU(),
+                nn.Dropout(p=0.1),
+                nn.Linear(d_model // 2, d_model // 4),
+                nn.ReLU(),
+                nn.Dropout(p=0.1),
+                nn.Linear(d_model // 4, self.model.num_modes),
+                nn.Softmax(),
+            ).cuda()
+            self.optimizer.add_param_group({'params': [p for p in self.classifier.parameters()]})
+
     def get_per_sample_loss(self, batch):
+        '''
+        Args:
+            consider_prior: if True, no longer calculates the per_sample_loss.
+            Rather, modifiy the per_sample_loss so that the get_assignments call
+            will return the learned_prior modified assignments.
+        '''
 
         input_ids = batch['input_ids'].cuda()
         labels = batch['labels'].cuda()
@@ -312,6 +337,16 @@ class DropoutTrickEMTrainer(MultiAdapterTrainer, ABC):
 
             for sample_idx in range(batch_size):
                 per_sample_loss[sample_idx][i] = cross_entropy(logits[sample_idx], labels[sample_idx])
+
+        if self.lp:
+            assert self.lp == True
+            sums = (encoder_outputs.last_hidden_state * attention_mask.unsqueeze(dim=-1)).sum(dim=1)
+            embeddings = sums / attention_mask.sum(dim=1).unsqueeze(dim=-1)
+
+            priors = self.classifier(embeddings)
+            likelihood = torch.exp(-per_sample_loss)
+            posterior = priors * likelihood
+            per_sample_loss = -torch.log(posterior)
 
         return per_sample_loss
 
@@ -451,6 +486,7 @@ if __name__ == '__main__':
     parser.add_argument('--accumulation-steps', type=int, default=1)
     parser.add_argument('--num-forward-passes', type=int, default=1)  # specific to eqhem trainer
     parser.add_argument('--num-steps-per-assignment', type=int, default=1)  # specific to eqhem trainer
+    parser.add_argument('--lp', action='store_true')
 
     # Evaluation parameters
     parser.add_argument('--language', type=str, choices=['en', 'zh'], default='en')
@@ -556,8 +592,8 @@ if __name__ == '__main__':
         config['shuffle'] = True
         trainer = RandomTrainer(**config)
     elif args.trainer == 'trick-hem':
-        trainer = DropoutTrickHardEMTrainer(**config)
+        trainer = DropoutTrickHardEMTrainer(lp=args.lp, **config)
     elif args.trainer == 'trick-sem':
-        trainer = DropoutTrickSoftEMTrainer(**config)
+        trainer = DropoutTrickSoftEMTrainer(lp=args.lp, **config)
 
     trainer.train()

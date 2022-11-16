@@ -28,6 +28,7 @@ where
 1. --num-modes specifies the number of decoders
 2. --trainer specifies the training algorithm. eqhem for EqHard-EM, sem for Soft-EM, hem for Hard-EM, random for EqRandom-Fixed, and drandom for EqRandom-Dynamic.
 3. --decoder specifies the decoder architecture.
+4. --lp enables learned priors. (uniform prior by default)
 
 ## Monitoring Performance
 
