@@ -49,7 +49,7 @@ tensorboard --logdir=path-to-the-timestamped-logging-folder
 
 If the performance is still increasing at the end of training, you can resume with the following command
 ```bash
-python train.py \
+python base_train.py \
     --the-original-arguments-that-you-started-training-with
     --resume-path=path-to-the-timestamped-logging-folder
 ```
